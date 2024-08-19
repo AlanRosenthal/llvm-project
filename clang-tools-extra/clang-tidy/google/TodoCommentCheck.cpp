@@ -9,6 +9,7 @@
 #include "TodoCommentCheck.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Lex/Preprocessor.h"
+#include <list>
 #include <optional>
 
 namespace clang::tidy::google::readability {
@@ -17,7 +18,8 @@ class TodoCommentCheck::TodoCommentHandler : public CommentHandler {
 public:
   TodoCommentHandler(TodoCommentCheck &Check, std::optional<std::string> User)
       : Check(Check), User(User ? *User : "unknown"),
-        TodoMatch("^// *TODO *(\\(.*\\))?:?( )?(.*)$") {}
+        TodoMatches{"^// *TODO *(\\(.*\\))?:? ?(.*)$",
+                    "^// *TODO: *(.*) *- *(.*)$"} {}
 
   bool HandleComment(Preprocessor &PP, SourceRange Range) override {
     StringRef Text =
@@ -25,13 +27,28 @@ public:
                              PP.getSourceManager(), PP.getLangOpts());
 
     SmallVector<StringRef, 4> Matches;
-    if (!TodoMatch.match(Text, &Matches))
+    if (!std::any_of(TodoMatches.begin(), TodoMatches.end(),
+                     [&Text, &Matches](const std::string &TodoMatch) {
+                       return llvm::Regex(TodoMatch).match(Text, &Matches);
+                     })) {
       return false;
+    }
 
-    StringRef Username = Matches[1];
-    StringRef Comment = Matches[3];
+    int Found = false;
 
-    if (!Username.empty())
+    for (const std::string &TodoMatch : TodoMatches) {
+      if (llvm::Regex(TodoMatch).match(Text, &Matches)) {
+        Found = true;
+      }
+    }
+    if (!Found) {
+      return false;
+    }
+
+    StringRef Info = Matches[1];
+    StringRef Comment = Matches[2];
+
+    if (!Info.empty())
       return false;
 
     std::string NewText = ("// TODO(" + Twine(User) + "): " + Comment).str();
@@ -45,7 +62,7 @@ public:
 private:
   TodoCommentCheck &Check;
   std::string User;
-  llvm::Regex TodoMatch;
+  std::list<std::string> TodoMatches;
 };
 
 TodoCommentCheck::TodoCommentCheck(StringRef Name, ClangTidyContext *Context)
